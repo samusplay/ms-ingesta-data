@@ -1,7 +1,7 @@
 
 
 from fastapi import APIRouter, Depends
-from pytest import Session
+from sqlalchemy.orm import Session
 
 from app.application.prueba_service import PruebaService
 from app.infrastructure.database import get_db
