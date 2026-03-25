@@ -14,4 +14,4 @@ if __name__ == "__main__":
     print(f"\033[94m🔌 Puerto:\033[0m {PORT}")
     print(f"\033[92m📖 Documentación:\033[0m http://{HOST}:{PORT}/docs")
     print("="*50 + "\n")
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=PORT, reload=True)
