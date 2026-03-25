@@ -30,7 +30,7 @@ def get_db():
     finally:
         db.close()
         
-from app.infrastructure.models.prueba_model import PruebaModel
+
 
 #crea las tablas que no existen
 Base.metadata.create_all(bind=engine)
