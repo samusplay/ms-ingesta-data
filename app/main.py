@@ -1,29 +1,14 @@
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
+from app.routers.dataset_router import router
+from app.infrastructure.db import Base, engine
 
-from app.infrastructure.database import check_db_connection
-from app.routers.api import api_router
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+app.include_router(router)
 
 
-#gestor de vida
-@asynccontextmanager
-async def lifespan(app:FastAPI):
-    print("\033[94m⚙️  Configurando servicios internos...\033[0m")
-    
-    if check_db_connection():
-        print("\033[92m✅ PERSISTENCIA: Conectado a PostgreSQL\033[0m")
-    else:
-        print("\033[91m🚨 PERSISTENCIA: Fallo al conectar a PostgreSQL\033[0m")
-    
-    yield
-    print("\033[93m\nFinalizando procesos...\033[0m")
-
-#Instaciamos app
-app=FastAPI(
-    title="Api ingesta de datos",
-    description="Responsable de recibir datasets y metadatos de carga",
-    lifespan=lifespan
-)
-#llamada api/routes 
-app.include_router(api_router)
+@app.get("/health")
+def health():
+    return {"status": "ok"}
