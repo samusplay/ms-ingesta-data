@@ -1,61 +1,84 @@
+import hashlib
+import os
+import re
+
+from fastapi import UploadFile
 from sqlalchemy.orm import Session
+
+from app.application.validators.dataframe_validator import DataFrameValidator
 from app.domain.enums import DatasetStatus
 from app.infrastructure.repositories.dataset_repository import DatasetRepository
 
 
 class DatasetService:
-
-    def __init__(self, repo: DatasetRepository):
+    # Inyectamos el repo y el validador
+    def __init__(self, repo: DatasetRepository, validator: DataFrameValidator):
         self.repo = repo
+        self.validator = validator
+        
 
-    def process_dataset(
-        self,
-        db: Session,
-        file_name: str,
-        path: str,
-        fmt: str,
-        checksum: str,
-        total: int,
-        valid: int,
-        invalid: int
-    ):
+    async def process_dataset(self, db: Session, file: UploadFile, content: bytes):
+        # 1. GUARDADO 
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+
+        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+        file_path = os.path.join(upload_dir, safe_name)
+        file_format = safe_name.split(".")[-1].lower()
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        checksum = hashlib.md5(content).hexdigest()
+
+        # 2. VALIDACIÓN (Delegada a Pandas de forma limpia)
         try:
-            # CA1
-            dataset = self.repo.create_dataset_load(db, file_name)
+            metrics = self.validator.extract_metrics(file_path, file_format)
+        except Exception as e:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise e
 
-            # 🔥 FIX CRÍTICO
+        # 3. TRANSACCIÓN DE BASE DE DATOS
+        try:
+            dataset = self.repo.create_dataset_load(db, safe_name)
             db.flush()
 
-            # CA2
             self.repo.create_file_reference(
-                db,
-                dataset.id,
-                path,
-                fmt,
-                checksum
+                db=db, 
+                dataset_id=str(dataset.id), 
+                path=file_path,
+                fmt=file_format, 
+                checksum=checksum
             )
 
-            # CA3
             status = (
-                DatasetStatus.COMPLETED.value
-                if invalid == 0
+                DatasetStatus.COMPLETED.value 
+                if metrics["invalid"] == 0 
                 else DatasetStatus.FAILED.value
             )
 
             self.repo.update_counts(
-                db,
-                dataset.id,
-                total,
-                valid,
-                invalid,
-                status
+                db=db, 
+                dataset_id=str(dataset.id), 
+                total=metrics["total"], 
+                valid=metrics["valid"], 
+                invalid=metrics["invalid"], 
+                status=status
             )
 
-            # CA4
             db.commit()
+
+            # 4. INTEGRACIÓN CON AUDITORÍA 
+            # try:
+            #     await self.audit_client.send_event("DATA_LOADED", safe_name)
+            # except Exception as e:
+            #     print(f"Error auditoría: {e}")
 
             return dataset
 
-        except Exception:
+        except Exception as e:
             db.rollback()
-            raise
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise e

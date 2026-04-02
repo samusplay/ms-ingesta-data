@@ -1,72 +1,61 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from app.infrastructure.db import SessionLocal
-from app.application.dataset_service import DatasetService
-from app.infrastructure.repositories.dataset_repository import DatasetRepository
-from app.schemas.dataset_schema import DatasetRequest
-from fastapi import UploadFile, File
-import hashlib
+
 import os
-router = APIRouter()
+import uuid
 
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy.orm import Session
 
+#conexion a la base de datos este import
+from app.application.dataset_service import DatasetService
+from app.application.validators.dataframe_validator import DataFrameValidator
+from app.infrastructure.database import get_db
+from app.infrastructure.repositories.dataset_repository import DatasetRepository
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+router=APIRouter()
 
-@router.post("/datasets")
-def create_dataset(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+async def create_dataset(
+        file:UploadFile=File(...),
+        db:Session=Depends(get_db)
 ):
-    service = DatasetService(DatasetRepository())
-
-    try:
-        import re
-
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-
-        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
-        file_path = os.path.join(upload_dir, safe_name)
-
-        content = file.file.read()
-
-        if not content:
-            raise ValueError("Archivo vacío")
-
-        with open(file_path, "wb") as f:
-            f.write(content)
-
-        checksum = hashlib.md5(content).hexdigest()
-        file_format = safe_name.split(".")[-1]
-
-        total = 100
-        valid = 100
-        invalid = 0
-
-        dataset = service.process_dataset(
-            db,
-            safe_name,
-            file_path,
-            file_format,
-            checksum,
-            total,
-            valid,
-            invalid
+    #Rechazamos formatos
+    nombre, extension = os.path.splitext(file.filename)
+    if extension.lower() not in [".csv", ".json"]:
+        raise HTTPException(
+            status_code=400, 
+            detail="Formato no válido. Por favor suba un archivo CSV o JSON."
         )
+    #validacion de integridad del contenido
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(
+            status_code=400, 
+            detail="El archivo está vacío o corrupto."
+        )
+    #inyectamos dependencias
+    repo=DatasetRepository()
+    validator=DataFrameValidator()
+    #el service va usar el repo y el validator como parametros
+    service=DatasetService(repo,validator)
 
-        return {
+    #Mostramos respuesta con try y except
+    try:
+        #pasamos contenido al servicio
+        dataset=await service.process_dataset(db,file,content)
+        
+        return{
             "success": True,
-            "data": {"dataset_id": dataset.id},
+            "data": {
+                "dataset_load_id": dataset.id,
+                "trace_id": str(uuid.uuid4())
+            },
             "error": None
         }
-
+    except ValueError as ve:
+        #si pandas detecta que el archivo manda vacio 400
+        raise HTTPException(status_code=400,detail=str(ve))
     except Exception as e:
+        #Erros 500 interno del servidor
         import traceback
+        #muestra el error
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500,detail=f"Error interno del servidor:{str(e)}")
