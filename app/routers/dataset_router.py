@@ -13,6 +13,7 @@ from app.infrastructure.repositories.dataset_repository import DatasetRepository
 
 router=APIRouter()
 
+@router.post("/datasets", status_code=201)
 async def create_dataset(
         file:UploadFile=File(...),
         db:Session=Depends(get_db)

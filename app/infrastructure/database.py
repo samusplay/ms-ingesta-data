@@ -29,8 +29,3 @@ def get_db():
         yield db
     finally:
         db.close()
-        
-
-
-#crea las tablas que no existen
-Base.metadata.create_all(bind=engine)
