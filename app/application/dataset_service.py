@@ -15,10 +15,9 @@ class DatasetService:
     def __init__(self, repo: DatasetRepository, validator: DataFrameValidator):
         self.repo = repo
         self.validator = validator
-        
 
     async def process_dataset(self, db: Session, file: UploadFile, content: bytes):
-        # 1. GUARDADO 
+        # 1. GUARDADO
         upload_dir = "uploads"
         os.makedirs(upload_dir, exist_ok=True)
 
@@ -31,12 +30,29 @@ class DatasetService:
 
         checksum = hashlib.md5(content).hexdigest()
 
-        # 2. VALIDACIÓN (Delegada a Pandas de forma limpia)
+        # 2. VALIDACIÓN
         try:
-            metrics = self.validator.extract_metrics(file_path, file_format)
-        except Exception as e:
+            df_clean, metrics = self.validator.extract_metrics(file_path, file_format)
+
+        except ValueError as e:
+            # 🔴 crear dataset en estado REJECTED
+            dataset = self.repo.create_dataset_load(db, safe_name)
+            db.flush()
+
+            self.repo.update_counts(
+                db=db,
+                dataset_id=str(dataset.id),
+                total=0,
+                valid=0,
+                invalid=0,
+                status=DatasetStatus.REJECTED.value
+            )
+
+            db.commit()
+
             if os.path.exists(file_path):
                 os.remove(file_path)
+
             raise e
 
         # 3. TRANSACCIÓN DE BASE DE DATOS
@@ -45,35 +61,26 @@ class DatasetService:
             db.flush()
 
             self.repo.create_file_reference(
-                db=db, 
-                dataset_id=str(dataset.id), 
+                db=db,
+                dataset_id=str(dataset.id),
                 path=file_path,
-                fmt=file_format, 
+                fmt=file_format,
                 checksum=checksum
             )
 
-            status = (
-                DatasetStatus.COMPLETED.value 
-                if metrics["invalid"] == 0 
-                else DatasetStatus.FAILED.value
-            )
+            # 🔹 estado correcto según Jira
+            status = DatasetStatus.VALIDATED.value
 
             self.repo.update_counts(
-                db=db, 
-                dataset_id=str(dataset.id), 
-                total=metrics["total"], 
-                valid=metrics["valid"], 
-                invalid=metrics["invalid"], 
+                db=db,
+                dataset_id=str(dataset.id),
+                total=metrics["total"],
+                valid=metrics["valid"],
+                invalid=metrics["invalid"],
                 status=status
             )
 
             db.commit()
-
-            # 4. INTEGRACIÓN CON AUDITORÍA 
-            # try:
-            #     await self.audit_client.send_event("DATA_LOADED", safe_name)
-            # except Exception as e:
-            #     print(f"Error auditoría: {e}")
 
             return dataset
 
