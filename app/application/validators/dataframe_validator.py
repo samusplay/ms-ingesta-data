@@ -1,66 +1,65 @@
+import io
+from typing import Dict, Tuple
+
 import pandas as pd
 
 
+# Ya no lanzaremos excepción por columnas faltantes, pero la dejamos por si el archivo está corrupto
+class DatasetValidationException(Exception):
+    pass
+
 class DataFrameValidator:
     """
-    Clase encargada de validar la estructura y contenido del dataset
+    Clase encargada de validar la estructura básica del dataset en memoria.
+    Se ha flexibilizado para aceptar datasets crudos sin cabeceras estrictas.
     """
+    
+    # 🔹 Cabeceras deseadas (pero ahora opcionales para la ingesta)
+    DESIRED_HEADERS = ["zone_code", "zone_name"]
 
-    # 🔹 Cabeceras obligatorias
-    REQUIRED_HEADERS = ["zone_code", "zone_name"]
-
-    def validate_headers(self, df: pd.DataFrame):
-        """
-        Valida que el dataframe tenga las columnas obligatorias
-        """
-        missing = [col for col in self.REQUIRED_HEADERS if col not in df.columns]
-
-        if missing:
-            raise ValueError(f"Faltan las siguientes columnas obligatorias: {missing}")
-
-    def extract_metrics(self, file_path: str, file_format: str):
-        """
-        Lee el archivo, valida estructura y calcula métricas
-        """
+    @classmethod
+    def extract_metrics(cls, file_content: bytes, file_format: str) -> Tuple[pd.DataFrame, Dict[str, int]]:
         try:
-            #  Leer archivo
+            # 1. LEER EN MEMORIA
             if file_format == 'csv':
-                df = pd.read_csv(file_path)
+                df = pd.read_csv(io.BytesIO(file_content))
             elif file_format == 'json':
-                df = pd.read_json(file_path)
+                df = pd.read_json(io.BytesIO(file_content))
             else:
-                raise ValueError("Formato No soportado")
+                raise ValueError(f"Formato no soportado: {file_format}")
 
-            #  VALIDAR CABECERAS (CA1)
-            self.validate_headers(df)
+            total_records = len(df)
+            df_columns = df.columns.tolist()
 
-            #  TOTAL DE FILAS (CA2)
-            total = len(df)
+            
+            # Verificamos si tiene las columnas exactas
+            has_desired_columns = all(col in df_columns for col in cls.DESIRED_HEADERS)
 
-            #  LIMPIEZA DE DATOS (CA3)
+            df_clean = df.copy()
 
-            # Eliminar filas con nulos en columnas obligatorias
-            df_clean = df.dropna(subset=["zone_code", "zone_name"]).copy()
+            if has_desired_columns:
+                # Si tiene la suerte de venir con las cabeceras exactas, hacemos limpieza temprana
+                df_clean = df_clean.dropna(subset=cls.DESIRED_HEADERS)
+                df_clean["zone_code"] = pd.to_numeric(df_clean["zone_code"], errors="coerce")
+                df_clean = df_clean.dropna(subset=["zone_code"])
+            else:
+                # Si no las tiene, simplemente aceptamos el archivo tal cual viene.
+                # La limpieza real se hará en el módulo de Análisis/Transformación.
+                pass
 
-            # Convertir zone_code a numérico
-            df_clean["zone_code"] = pd.to_numeric(df_clean["zone_code"], errors="coerce")
+            # 3. CONTADORES FINALES
+            valid_records = len(df_clean)
+            invalid_records = total_records - valid_records
 
-            # Eliminar filas donde la conversión falló
-            df_clean = df_clean.dropna(subset=["zone_code"])
-
-            #  CONTADORES
-            valid = len(df_clean)
-            invalid = total - valid
-
-            #  RETORNAR DATA LIMPIA + MÉTRICAS
-            return df_clean, {
-                "total": total,
-                "valid": valid,
-                "invalid": invalid
+            metrics = {
+                "record_count": total_records,
+                "valid_record_count": valid_records,
+                "invalid_record_count": invalid_records
             }
+
+            return df_clean, metrics
 
         except pd.errors.EmptyDataError:
             raise ValueError("El archivo está estructuralmente vacío")
-
         except Exception as e:
-            raise ValueError(f"Error procesando archivo: {str(e)}")
+            raise ValueError(f"Error procesando archivo en memoria: {str(e)}")
