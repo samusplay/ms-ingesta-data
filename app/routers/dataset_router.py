@@ -4,13 +4,15 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.application.dataset_service import DatasetService
+from app.application.service.dataset_service import DatasetService
 from app.application.validators.dataframe_validator import (
     DataFrameValidator,
     DatasetValidationException,
 )
 from app.infrastructure.database import get_db
-from app.infrastructure.repositories.dataset_repository import DatasetRepository
+
+# 👇 Importamos SOLAMENTE la implementación concreta
+from app.infrastructure.repositories.dataset_repository import DatasetRepositoryImpl
 
 router = APIRouter()
 
@@ -34,8 +36,8 @@ async def create_dataset(
             detail="El archivo está vacío o corrupto."
         )
 
-    # Inyección de dependencias
-    repo = DatasetRepository()
+    # 👇 CORRECCIÓN: Inyección de dependencias usando la implementación concreta (Impl)
+    repo = DatasetRepositoryImpl()
     validator = DataFrameValidator()
     service = DatasetService(repo, validator)
 
@@ -70,3 +72,39 @@ async def create_dataset(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+    
+
+# Endpoint para que ms-transform traiga los datos
+@router.get("/datasets/{dataset_load_id}/raw", status_code=200)
+async def get_raw_dataset_records(
+    dataset_load_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Endpoint para que ms-transform pueda obtener los datos validados 
+    del dataset en formato JSON.
+    """
+    # 1. Instanciamos la implementación concreta de nuestro repositorio
+    repo = DatasetRepositoryImpl()
+    validator = DataFrameValidator()
+    
+    # 2. Inyectamos el repo y el validador en el servicio
+    service = DatasetService(repo, validator)
+
+    try:
+        # 3. Llamamos al caso de uso que creamos en el servicio
+        records = await service.get_dataset_raw_data(db, dataset_load_id)
+        
+        # 4. Cumplimos con el contrato esperado (StandardResponse)
+        return {
+            "success": True,
+            "data": records,
+            "error": None
+        }
+    except Exception as e:
+        # Si algo falla (ej: el ID no existe o no hay datos), lanzamos 404
+        print(f"Error al obtener dataset raw data: {e}")
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No se encontraron registros para el dataset ID: {dataset_load_id}"
+        )

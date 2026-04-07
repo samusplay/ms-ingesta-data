@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+
 @dataclass
 class DatasetLoad:
     id: UUID
@@ -21,3 +22,9 @@ class DatasetFileReference:
     file_format: str
     checksum: str
     created_at: datetime
+    
+@dataclass
+class DatasetRecord:
+    id:UUID
+    dataset_load_id:UUID
+    row_data:dict
