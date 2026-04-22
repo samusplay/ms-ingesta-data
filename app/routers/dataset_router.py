@@ -45,12 +45,27 @@ async def create_dataset(
         # Procesamos y recibimos métricas
         dataset, metrics = await service.process_dataset(db, file, content)
         
+        trace_id_str = str(uuid.uuid4())
+        dataset_id_str = str(dataset.id)
+
+        # Enviar evento de auditoría asíncronamente
+        from app.infrastructure.http_audit_client import HttpAuditClient
+        import asyncio
+        audit_client = HttpAuditClient()
+        asyncio.create_task(
+            audit_client.send_audit_event(
+                reference_id=dataset_id_str,
+                trace_id=trace_id_str,
+                summary=f"Carga y validación inicial de dataset completada. Records validos: {metrics['valid_record_count']}"
+            )
+        )
+        
         #Resumen estadistico
         return {
             "success": True,
             "data": {
-                "dataset_load_id": str(dataset.id),
-                "trace_id": str(uuid.uuid4()),
+                "dataset_load_id": dataset_id_str,
+                "trace_id": trace_id_str,
                 "metrics": {
                     "total_records": metrics["record_count"],
                     "valid_records": metrics["valid_record_count"],
