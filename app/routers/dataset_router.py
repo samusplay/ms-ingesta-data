@@ -1,8 +1,25 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
+import httpx
+
+MS_AUDITORIA_URL = os.getenv("MS_AUDITORIA_URL", "http://ms-auditoria:8000")
+
+async def send_audit_event(trace_id: str, event_type: str, summary: str):
+    """Envía un evento de auditoría asíncronamente al ms-auditoria"""
+    payload = {
+        "event_type": event_type,
+        "service_name": "ms-ingestion",
+        "trace_id": trace_id,
+        "event_summary": summary
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{MS_AUDITORIA_URL}/api/v1/events", json=payload, timeout=5.0)
+    except Exception as e:
+        print(f"Error enviando evento de auditoría: {e}")
 
 from app.application.service.dataset_service import DatasetService
 from app.application.validators.dataframe_validator import (
@@ -18,12 +35,15 @@ router = APIRouter()
 
 @router.post("/datasets", status_code=200) 
 async def create_dataset(
+        background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
         db: Session = Depends(get_db)
 ):
+    trace_id = str(uuid.uuid4())
     # Validación de formato inicial
     nombre, extension = os.path.splitext(file.filename)
     if extension.lower() not in [".csv", ".json"]:
+        background_tasks.add_task(send_audit_event, trace_id, "FORMAT_ERROR", f"Formato inválido intentado: {extension}")
         raise HTTPException(
             status_code=400, 
             detail="Formato no válido. Por favor suba un archivo CSV o JSON."
@@ -31,6 +51,7 @@ async def create_dataset(
 
     content = await file.read()
     if len(content) == 0:
+        background_tasks.add_task(send_audit_event, trace_id, "EMPTY_FILE_ERROR", "Se intentó subir un archivo vacío.")
         raise HTTPException(
             status_code=400, 
             detail="El archivo está vacío o corrupto."
@@ -45,12 +66,16 @@ async def create_dataset(
         # Procesamos y recibimos métricas
         dataset, metrics = await service.process_dataset(db, file, content)
         
+        # Enviamos evento de éxito
+        summary = f"Carga exitosa del dataset {file.filename} con {metrics['valid_record_count']} registros válidos."
+        background_tasks.add_task(send_audit_event, trace_id, "DATA_LOADED", summary)
+
         #Resumen estadistico
         return {
             "success": True,
             "data": {
                 "dataset_load_id": str(dataset.id),
-                "trace_id": str(uuid.uuid4()),
+                "trace_id": trace_id,
                 "metrics": {
                     "total_records": metrics["record_count"],
                     "valid_records": metrics["valid_record_count"],
@@ -62,15 +87,24 @@ async def create_dataset(
         }
 
     except DatasetValidationException as dve:
+        background_tasks.add_task(send_audit_event, trace_id, "VALIDATION_FAILED", dve.message)
         # CA 1: Retornar 422 Unprocessable Entity
         raise HTTPException(status_code=422, detail=dve.message)
         
     except ValueError as ve:
+        background_tasks.add_task(send_audit_event, trace_id, "VALUE_ERROR", str(ve))
         raise HTTPException(status_code=400, detail=str(ve))
         
     except Exception as e:
         import traceback
         traceback.print_exc()
+        # Enviamos evento de auditoría asíncrono
+        background_tasks.add_task(
+            send_audit_event,
+            trace_id=trace_id,
+            event_type="DATA_LOAD_ERROR",
+            summary=f"Error interno del servidor: {str(e)}"
+        )
         raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
     
 
